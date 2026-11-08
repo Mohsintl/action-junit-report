@@ -185,6 +185,17 @@ describe('resolvePath', () => {
     const path = await resolvePath('', './test_results/CalcUtilsTest.kt', ['/build/', '/__pycache__/'])
     expect(path).toBe('test_results/CalcUtilsTest.kt')
   })
+
+  it('should pick the file containing the test name when several files share the classname', async () => {
+    // https://github.com/mikepenz/action-junit-report/issues/1324
+    const dir = 'test_results/cucumber_duplicate_names/features'
+    expect(await resolvePath('', 'DupFeature', [], false, 'DupFeature.2 Logout works')).toBe(
+      `${dir}/target_2/DupFeature.feature`
+    )
+    expect(await resolvePath('', 'DupFeature', [], false, 'DupFeature.1 Login works')).toBe(
+      `${dir}/target_1/DupFeature.feature`
+    )
+  })
 })
 
 describe('parseFile', () => {
@@ -229,6 +240,16 @@ describe('parseFile', () => {
         raw_details:
           'java.lang.AssertionError: \n\nExpected: <100.10>\n     but: was <100.11>\n\tat action.surefire.report.calc.CalcUtilsTest.test scale(CalcUtilsTest.kt:15)'
       }
+    ])
+  })
+
+  it('should annotate each scenario in the file that contains it when feature files share a name', async () => {
+    // https://github.com/mikepenz/action-junit-report/issues/1324
+    const testResult = await parseFile('test_results/cucumber_duplicate_names/report.xml')
+    const dir = 'test_results/cucumber_duplicate_names/features'
+    expect(testResult!!.globalAnnotations.map(a => [a.title, a.path])).toStrictEqual([
+      ['DupFeature.DupFeature.1 Login works', `${dir}/target_1/DupFeature.feature`],
+      ['DupFeature.DupFeature.2 Logout works', `${dir}/target_2/DupFeature.feature`]
     ])
   })
 

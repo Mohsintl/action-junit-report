@@ -152,7 +152,8 @@ function safeParseInt(line: string | null): number | null {
  * Modification Copyright 2022 Mike Penz
  * https://github.com/mikepenz/action-junit-report/
  */
-const resolvePathCache: {[key: string]: string} = {}
+// Every non-excluded match per file name, so a name shared by several files can still be told apart per test.
+const resolvePathCache: {[key: string]: string[]} = {}
 
 /**
  * Resolves the path of a given file, optionally following symbolic links.
@@ -161,17 +162,21 @@ const resolvePathCache: {[key: string]: string} = {}
  * @param {string} transformedFileName - The transformed file name to find.
  * @param {string[]} excludeSources - List of source paths to exclude.
  * @param {boolean} [followSymlink=false] - Whether to follow symbolic links.
+ * @param {string} [testName] - When several files match, the one containing this test name wins (e.g. Cucumber
+ * scenarios in same-named feature files in different folders). Without a unique match the first file is used.
  * @returns {Promise<string>} - The resolved file path.
  */
 export async function resolvePath(
   workspace: string,
   transformedFileName: string,
   excludeSources: string[],
-  followSymlink = false
+  followSymlink = false,
+  testName?: string
 ): Promise<string> {
   const fileName: string = removePrefix(transformedFileName, workspace)
-  if (resolvePathCache[fileName]) {
-    return resolvePathCache[fileName]
+  const cached = resolvePathCache[fileName]
+  if (cached) {
+    return pickCandidate(cached, testName, fileName)
   }
 
   let workspacePath: string
@@ -188,21 +193,49 @@ export async function resolvePath(
     follow: followSymlink
   })
 
+  const searchPath = pathHelper.resolve(workspacePath || '.')
+  const candidates: string[] = []
   for (const result of results) {
     const absolutePath = pathHelper.resolve(result)
     core.debug(`Matched file: ${absolutePath}`)
 
     const found = excludeSources.find(v => absolutePath.includes(v))
     if (!found) {
-      const searchPath = pathHelper.resolve(workspacePath || '.')
-      const path = pathHelper.relative(searchPath, absolutePath)
-      core.debug(`Resolved path: ${path}`)
-      resolvePathCache[fileName] = path
-      return path
+      candidates.push(pathHelper.relative(searchPath, absolutePath))
     }
   }
-  resolvePathCache[fileName] = normalizedFilename
-  return normalizedFilename
+  resolvePathCache[fileName] = candidates.length > 0 ? candidates : [normalizedFilename]
+  return pickCandidate(resolvePathCache[fileName], testName, fileName)
+}
+
+/**
+ * The candidate whose contents name the test, when exactly one does; otherwise the first candidate, as before.
+ */
+function pickCandidate(candidates: string[], testName: string | undefined, fileName: string): string {
+  let path = candidates[0]
+  if (candidates.length > 1 && testName) {
+    const matching = candidates.filter(candidate => fileContains(candidate, testName))
+    if (matching.length === 1) {
+      path = matching[0]
+    } else {
+      core.debug(
+        `${candidates.length} files match ${fileName} and ${matching.length} name '${testName}'; using the first`
+      )
+    }
+  }
+  core.debug(`Resolved path: ${path}`)
+  return path
+}
+
+/**
+ * Whether the file at `path` contains `text`; an unreadable file never does.
+ */
+function fileContains(path: string, text: string): boolean {
+  try {
+    return fs.readFileSync(path, 'utf8').includes(text)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -594,7 +627,13 @@ async function createTestCaseAnnotation(
     } else if (githubWorkspacePath && fs.existsSync(`${githubWorkspacePath}${transformedFileName}`)) {
       resolvedPath = `${githubWorkspacePath}${transformedFileName}`
     } else {
-      resolvedPath = await resolvePath(githubWorkspacePath || '', transformedFileName, excludeSources, followSymlink)
+      resolvedPath = await resolvePath(
+        githubWorkspacePath || '',
+        transformedFileName,
+        excludeSources,
+        followSymlink,
+        testcase._attributes.name
+      )
     }
   }
 
